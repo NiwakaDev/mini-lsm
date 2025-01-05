@@ -1,12 +1,14 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
-use std::ops::Bound;
+use std::borrow::BorrowMut;
+use std::ops::{Bound, RangeBounds};
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use anyhow::{Ok, Result};
 use bytes::Bytes;
+use crossbeam_skiplist::map::Entry;
 use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
@@ -105,8 +107,20 @@ impl MemTable {
     }
 
     /// Get an iterator over a range of keys.
-    pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
-        unimplemented!()
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> MemTableIterator {
+        let mut iter = MemTableIteratorBuilder {
+            map: self.map.clone(),
+            iter_builder: |map| {
+                map.range((
+                    lower.map(|v| Bytes::copy_from_slice(v)),
+                    upper.map(|v| Bytes::copy_from_slice(v)),
+                ))
+            },
+            item: (Bytes::from_static(&[]), Bytes::from_static(&[])),
+        }
+        .build();
+        iter.next().unwrap();
+        iter
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
@@ -148,22 +162,32 @@ pub struct MemTableIterator {
     item: (Bytes, Bytes),
 }
 
+static DELETE_KEY: &[u8] = &[];
+
 impl StorageIterator for MemTableIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.with_item(|element| &element.1)
     }
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.with_item(|element| KeySlice::from_slice(&element.0))
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !&self.borrow_item().0.is_empty()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.with_mut(|iter| {
+            let entry = iter.iter.next();
+            if let Some(entry) = entry {
+                *iter.item = (entry.key().clone(), entry.value().clone());
+            } else {
+                *iter.item = (Bytes::from_static(DELETE_KEY), Bytes::from_static(&[]));
+            }
+        });
+        Ok(())
     }
 }
